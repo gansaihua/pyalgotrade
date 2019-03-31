@@ -147,6 +147,7 @@ class Profiler(object):
         self.__rets = {}
         self.__futureRets = {}
         self.__events = {}
+        self.dispatcher = dispatcher.Dispatcher()
 
     def __addPastReturns(self, instrument, event):
         begin = (event.getLookBack() + 1) * -1
@@ -211,9 +212,8 @@ class Profiler(object):
                 self.__rets[instrument] = roc.RateOfChange(ds, 1)
 
             feed.getNewValuesEvent().subscribe(self.__onBars)
-            disp = dispatcher.Dispatcher()
-            disp.addSubject(feed)
-            disp.run()
+            self.dispatcher.addSubject(feed)
+            self.dispatcher.run()
         finally:
             feed.getNewValuesEvent().unsubscribe(self.__onBars)
 

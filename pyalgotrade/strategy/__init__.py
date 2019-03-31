@@ -522,9 +522,12 @@ class BaseStrategy(object):
         """Stops a running strategy."""
         self.__dispatcher.stop()
 
-    def attachAnalyzer(self, strategyAnalyzer):
+    def attachAnalyzer(self, strategyAnalyzer, name=None):
         """Adds a :class:`pyalgotrade.stratanalyzer.StrategyAnalyzer`."""
-        self.attachAnalyzerEx(strategyAnalyzer)
+        self.attachAnalyzerEx(strategyAnalyzer, name)
+
+    def getAnalyzers(self):
+        return self.__analyzers
 
     def getNamedAnalyzer(self, name):
         return self.__namedAnalyzers.get(name, None)
