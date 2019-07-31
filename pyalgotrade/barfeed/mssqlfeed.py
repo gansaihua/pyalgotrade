@@ -55,5 +55,5 @@ class Feed(membf.BarFeed):
         return self.__db
 
     def loadBars(self, instrument, fromDateTime=None, toDateTime=None, benchmark=None):
-        bars = self.getDatabase().getBars(instrument, fromDateTime, toDateTime, benchmark)
+        bars = self.__db.getBars(instrument, fromDateTime, toDateTime, benchmark)
         self.addBarsFromSequence(instrument, bars)
