@@ -145,3 +145,10 @@ class SequenceDataSeries(DataSeries):
 
     def getDateTimes(self):
         return self.__dateTimes.data()
+
+    def to_series(self):
+        from pandas import Series
+        return Series(data=self.__values.data(), index=self.getDateTimes())
+
+    def plot(self):
+        self.to_series().plot()
