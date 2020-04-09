@@ -1,8 +1,8 @@
 import io
 import datetime
 
-from tensorflow.compat.v1 import Summary
-from tensorflow.compat.v1.summary import FileWriter
+import tensorflow as tf
+from tensorflow import Summary
 from tensorflow.python.util.nest import is_sequence
 
 from pyalgotrade.plotter import StrategyPlotter
@@ -24,7 +24,7 @@ class TensorBoard(object):
     """
     def __init__(self, log_dir='./logs', max_queue=10, flush_secs=120):
         self.log_dir = log_dir
-        self.writer = FileWriter(self.log_dir, max_queue=max_queue,
+        self.writer = tf.summary.FileWriter(self.log_dir, max_queue=max_queue,
                                  flush_secs=flush_secs, graph_def=None)
 
     def log_algo(self, algo, epoch=None):
