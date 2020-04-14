@@ -42,7 +42,7 @@ class DrawDownHelper(object):
         return (self.__lastLow - self.__highWatermark) / float(self.__highWatermark)
 
     def update(self, dateTime, low, high):
-        assert(low <= high)
+        assert (low <= high)
         self.__lastLow = low
         self.__lastDateTime = dateTime
 
@@ -53,6 +53,20 @@ class DrawDownHelper(object):
         else:
             self.__lowWatermark = min(self.__lowWatermark, low)
 
+    def getLowWatermark(self):
+        return self.__lowWatermark
+
+    def getHighWatermark(self):
+        return self.__highWatermark
+
+
+class DrawDownHelper2(DrawDownHelper):
+    def __init__(self):
+        super(DrawDownHelper2, self).__init__()
+
+    def getMaxDrawDown(self):
+        return self.getLowWatermark() - self.getHighWatermark()
+
 
 class DrawDown(stratanalyzer.StrategyAnalyzer):
     """A :class:`pyalgotrade.stratanalyzer.StrategyAnalyzer` that calculates
@@ -62,7 +76,7 @@ class DrawDown(stratanalyzer.StrategyAnalyzer):
         super(DrawDown, self).__init__()
         self.__maxDD = 0
         self.__longestDDDuration = datetime.timedelta()
-        self.__currDrawDown = DrawDownHelper()
+        self.__currDrawDown = DrawDownHelper2()
 
     def calculateEquity(self, strat):
         return strat.getBroker().getEquity()
