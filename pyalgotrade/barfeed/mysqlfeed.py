@@ -3,7 +3,6 @@ from pyalgotrade.barfeed import dbfeed, membf
 
 import re
 import pandas as pd
-from functools import reduce
 from sqlalchemy import create_engine
 
 ENGINE = create_engine(
@@ -12,9 +11,40 @@ ENGINE = create_engine(
 )
 
 
+def get_contracts(root_symbol, from_date=None, to_date=None):
+    """
+    :param root_symbol: root symbol of contracts, e.g. IF, A
+    :param from_date: datetime alike
+    :param to_date: datetime alike
+    :param freq: `minute` or `day`
+    :return: list of contract symbols
+    """
+
+    sql = f'''
+    SELECT c.symbol
+    FROM futures_contract AS c
+    JOIN futures_rootsymbol AS rs
+    ON c.root_symbol_id = rs.id
+    WHERE rs.symbol = '{root_symbol}' 
+    '''
+
+    if from_date is not None:
+        from_date = pd.Timestamp(from_date)
+        sql += f" AND last_traded >= '{from_date}'"
+
+    if to_date is not None:
+        to_date = pd.Timestamp(to_date)
+        sql += f" AND last_traded <= '{to_date}'"
+
+    sql += ' ORDER BY last_traded'
+
+    symbols = ENGINE.execute(sql).cursor.fetchall()
+    return [symbol[0] for symbol in symbols]
+
+
 def get_ohlc(contract, from_date=None, to_date=None, freq='minute'):
     """
-    :param contract: str, e.g. IF1605, A2003
+    :param contract: symbol of contract str, e.g. IF1605, A2003
     :param from_date: datetime alike
     :param to_date: datetime alike
     :param freq: `minute` or `day`
@@ -64,8 +94,11 @@ def check_date(dt0, dt1):
     return (dt_year, dt_week) == (exp_year, exp_week)
 
 
-def check_condition(row0, row1):
-    return row0['volume'] < row1['volume']
+def check_condition(row0, row1, use_oi=True):
+    ret = row0['volume'] <= row1['volume']
+    if use_oi:
+        ret &= row0['open_interest'] <= row1['open_interest']
+    return ret
 
 
 class Database(dbfeed.Database):
@@ -76,9 +109,15 @@ class Database(dbfeed.Database):
         dfs = []
         if isinstance(instrument, (list, tuple)):
             for i in instrument:
-                dfs.append(get_ohlc(i, fromDateTime, toDateTime, frequency))
+                df = get_ohlc(i, fromDateTime, toDateTime, frequency)
+                if not df.empty:
+                    dfs.append(df)
+        elif isinstance(instrument, str):
+            df = get_ohlc(instrument, fromDateTime, toDateTime, frequency)
+            if not df.empty:
+                dfs.append(df)
         else:
-            dfs.append(get_ohlc(instrument, fromDateTime, toDateTime, frequency))
+            raise Exception('Not supported instrument.')
 
         if len(dfs) > 1:
             dfs = sorted(dfs, key=lambda x: x.attrs['last_traded'])
@@ -89,6 +128,9 @@ class Database(dbfeed.Database):
         df_iter = df.iterrows()
         last_traded = df.attrs['last_traded']
 
+        # LOGGING: enter the first contract
+        print(f"ROLL to {df.attrs['name']} at {df.index[0]}.")
+
         ret = []
         while True:
             try:
@@ -96,6 +138,8 @@ class Database(dbfeed.Database):
             except StopIteration:
                 break
 
+            # To aviod lookahead bias
+            # place this block before the contract roll checking
             ret.append(BasicBar(
                 dt,
                 row['open'],
@@ -108,11 +152,10 @@ class Database(dbfeed.Database):
                 extra={'open_interest': row['open_interest']},
             ))
 
-            # aviod survivorship bias
             # Futures Roll Method
-            # first check date then check volume
+            # first check date then check volume and open interest
             if check_date(dt, last_traded):
-                if len(dfs) and check_condition(row, dfs[0].loc[dt]):
+                if len(dfs) and check_condition(row, dfs[0].loc[dt], True):
                     df = dfs.pop(0)
 
                     # dt is added, so we skip it
@@ -121,6 +164,8 @@ class Database(dbfeed.Database):
 
                     df_iter = df.iterrows()
                     last_traded = df.attrs['last_traded']
+
+                    # LOGGING: enter the successive contract
                     print(f"ROLL to {df.attrs['name']} at {dt}.")
 
         return ret
@@ -138,26 +183,30 @@ class Feed(membf.BarFeed):
         return self.__db
 
     def loadBars(self, instrument, frequency, fromDateTime=None, toDateTime=None):
-        bars = self.getDatabase().getBars(
-            instrument,
-            frequency,
-            fromDateTime=fromDateTime,
-            toDateTime=toDateTime,
-        )
-
-        if isinstance(instrument, (list, tuple)):
+        if isinstance(instrument, str):
+            root_symbol = instrument
+            contracts = get_contracts(instrument, fromDateTime, toDateTime)
+            if not contracts:  # single contract
+                contracts = [instrument]
+        elif isinstance(instrument, (list, tuple)):  # list of contracts
             root_symbol = None
-            for i in instrument:
-                m = re.match(r'^(\w{1,2}?)\d{4}$', i)
+            contracts = instrument
+            for contract in contracts:
+                m = re.match(r'^(\w{1,2}?)\d{4}$', contract)
                 if m:
                     if root_symbol is None:
                         root_symbol = m.group(1)
                     else:
-                        assert root_symbol == m.group(
-                            1), 'Multiple futures are not supported.'
+                        assert root_symbol == m.group(1), 'Multiple futures are not supported.'
                 else:
                     raise Exception('Not supported contract.')
         else:
-            root_symbol = instrument
+            raise Exception('Not supported instrument.')
 
+        bars = self.getDatabase().getBars(
+            contracts,
+            frequency,
+            fromDateTime=fromDateTime,
+            toDateTime=toDateTime,
+        )
         self.addBarsFromSequence(root_symbol, bars)
