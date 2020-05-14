@@ -1,21 +1,23 @@
 import re
 import pandas as pd
+from datetime import timedelta
 from sqlalchemy import create_engine
 from pyalgotrade.bar import BasicBar, Frequency
 from pyalgotrade.barfeed import dbfeed, membf
 
 ENGINE = create_engine(
     'mysql+pymysql://rm-2zedo2m914a92z7rhfo.mysql.rds.aliyuncs.com',
-    connect_args={'read_default_file': 'd:/mysql.cnf'},
+    connect_args={'read_default_file': '/share/my.cnf'},
 )
 
 
-def get_contracts(root_symbol, from_date=None, to_date=None):
+def get_contracts(root_symbol, from_date=None, to_date=None, included=None):
     """
     :param root_symbol: root symbol of contracts, e.g. IF, A
     :param from_date: datetime alike
     :param to_date: datetime alike
     :param freq: `minute` or `day`
+    :param inclued: None or list e.g. [6], [3, 6, 9, 12], contracts of specific months to include
     :return: list of contract symbols
     """
 
@@ -26,6 +28,13 @@ def get_contracts(root_symbol, from_date=None, to_date=None):
     ON c.root_symbol_id = rs.id
     WHERE rs.symbol = '{root_symbol}' 
     '''
+
+    if included is not None:
+        if len(included) == 1:
+            sql += f' AND RIGHT(c.symbol, 2) = {int(included[0]):02}'
+        else:
+            included = (f'{int(x):02}' for x in included)
+            sql += f' AND RIGHT(c.symbol, 2) IN {tuple(included)}'
 
     if from_date is not None:
         from_date = pd.Timestamp(from_date)
@@ -87,18 +96,25 @@ def get_ohlc(contract, from_date=None, to_date=None, freq='minute'):
     return df
 
 
-def check_date(dt0, dt1):
-    dt_year, dt_week, _ = dt0.isocalendar()
-    exp_year, exp_week, _ = dt1.isocalendar()
-    return (dt_year, dt_week) == (exp_year, exp_week)
-
-
-def check_condition(row0, row1):
-    return row0['open_interest'] <= row1['open_interest'] or \
-           row0['volume'] <= row1['volume']
-
-
 class Database(dbfeed.Database):
+    def __init__(self, check_condition=True):
+        def _check_date(dt0, dt1):
+            # dt_year, dt_week, _ = dt0.isocalendar()
+            # exp_year, exp_week, _ = dt1.isocalendar()
+            # return (dt_year, dt_week) == (exp_year, exp_week)
+            return dt0 >= dt1 - timedelta(days=5)
+
+        def _check_condition(row0, row1):
+            return row0['open_interest'] <= row1['open_interest'] or \
+                   row0['volume'] <= row1['volume']
+
+        super(Database, self).__init__()
+        self.check_date = _check_date
+
+        self.check_condition = None
+        if check_condition:
+            self.check_condition = _check_condition
+
     def addBar(self, instrument, bar, frequency):
         raise Exception('Not supported.')
 
@@ -152,8 +168,9 @@ class Database(dbfeed.Database):
 
             # Futures Roll Method
             # first check date then check volume and open interest
-            if check_date(dt, last_traded):
-                if len(dfs) and check_condition(row, dfs[0].loc[dt]):
+            if self.check_date(dt, last_traded):
+                if len(dfs) and (self.check_condition is None or
+                                 self.check_condition(row, dfs[0].loc[dt])):
                     df = dfs.pop(0)
 
                     # forward adjustment factor
@@ -168,14 +185,13 @@ class Database(dbfeed.Database):
 
                     # LOGGING: enter the successive contract
                     print(f"{df.attrs['name']}({dt}): {adjustment}")
-
         return ret
 
 
 class Feed(membf.BarFeed):
-    def __init__(self, maxLen=None):
+    def __init__(self, check_condition=True, maxLen=None):
         super(Feed, self).__init__(Frequency.DAY, maxLen)
-        self.__db = Database()
+        self.__db = Database(check_condition)
 
     def barsHaveAdjClose(self):
         return True
@@ -183,10 +199,10 @@ class Feed(membf.BarFeed):
     def getDatabase(self):
         return self.__db
 
-    def loadBars(self, instrument, frequency, fromDateTime=None, toDateTime=None):
+    def loadBars(self, instrument, frequency, fromDateTime=None, toDateTime=None, included=None):
         if isinstance(instrument, str):
             root_symbol = instrument
-            contracts = get_contracts(instrument, fromDateTime, toDateTime)
+            contracts = get_contracts(instrument, fromDateTime, toDateTime, included)
             if not contracts:  # single contract
                 contracts = [instrument]
         elif isinstance(instrument, (list, tuple)):  # list of contracts
