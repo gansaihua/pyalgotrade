@@ -1,9 +1,8 @@
-from pyalgotrade.bar import BasicBar, Frequency
-from pyalgotrade.barfeed import dbfeed, membf
-
 import re
 import pandas as pd
 from sqlalchemy import create_engine
+from pyalgotrade.bar import BasicBar, Frequency
+from pyalgotrade.barfeed import dbfeed, membf
 
 ENGINE = create_engine(
     'mysql+pymysql://rm-2zedo2m914a92z7rhfo.mysql.rds.aliyuncs.com',
