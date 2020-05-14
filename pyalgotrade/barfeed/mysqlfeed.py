@@ -6,7 +6,7 @@ from pyalgotrade.barfeed import dbfeed, membf
 
 ENGINE = create_engine(
     'mysql+pymysql://rm-2zedo2m914a92z7rhfo.mysql.rds.aliyuncs.com',
-    connect_args={'read_default_file': '/share/mysql.cnf'},
+    connect_args={'read_default_file': 'd:/mysql.cnf'},
 )
 
 
@@ -93,11 +93,9 @@ def check_date(dt0, dt1):
     return (dt_year, dt_week) == (exp_year, exp_week)
 
 
-def check_condition(row0, row1, use_oi=True):
-    ret = row0['volume'] <= row1['volume']
-    if use_oi:
-        ret &= row0['open_interest'] <= row1['open_interest']
-    return ret
+def check_condition(row0, row1):
+    return row0['open_interest'] <= row1['open_interest'] or \
+           row0['volume'] <= row1['volume']
 
 
 class Database(dbfeed.Database):
@@ -128,7 +126,8 @@ class Database(dbfeed.Database):
         last_traded = df.attrs['last_traded']
 
         # LOGGING: enter the first contract
-        print(f"ROLL to {df.attrs['name']} at {df.index[0]}.")
+        adjustment = 0
+        print(f"{df.attrs['name']}({df.index[0]}): {adjustment}")
 
         ret = []
         while True:
@@ -146,7 +145,7 @@ class Database(dbfeed.Database):
                 row['low'],
                 row['close'],
                 row['volume'],
-                None,
+                row['close'] + adjustment,  # forward adjustment, use `add` method
                 frequency=i_freq,
                 extra={'open_interest': row['open_interest']},
             ))
@@ -154,8 +153,11 @@ class Database(dbfeed.Database):
             # Futures Roll Method
             # first check date then check volume and open interest
             if check_date(dt, last_traded):
-                if len(dfs) and check_condition(row, dfs[0].loc[dt], True):
+                if len(dfs) and check_condition(row, dfs[0].loc[dt]):
                     df = dfs.pop(0)
+
+                    # forward adjustment factor
+                    adjustment += row['close'] - df.loc[dt, 'close']
 
                     # dt is added, so we skip it
                     idx = df.index.get_loc(dt)
@@ -165,7 +167,7 @@ class Database(dbfeed.Database):
                     last_traded = df.attrs['last_traded']
 
                     # LOGGING: enter the successive contract
-                    print(f"ROLL to {df.attrs['name']} at {dt}.")
+                    print(f"{df.attrs['name']}({dt}): {adjustment}")
 
         return ret
 
@@ -176,7 +178,7 @@ class Feed(membf.BarFeed):
         self.__db = Database()
 
     def barsHaveAdjClose(self):
-        return False
+        return True
 
     def getDatabase(self):
         return self.__db
