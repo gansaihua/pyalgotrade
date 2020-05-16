@@ -1,9 +1,13 @@
 import re
+import logging
 import pandas as pd
 from datetime import timedelta
 from sqlalchemy import create_engine
 from pyalgotrade.bar import BasicBar, Frequency
 from pyalgotrade.barfeed import dbfeed, membf
+from pyalgotrade import logger
+
+log = logger.getLogger(__name__)
 
 ENGINE = create_engine(
     'mysql+pymysql://rm-2zedo2m914a92z7rhfo.mysql.rds.aliyuncs.com',
@@ -69,8 +73,12 @@ def get_ohlc(contract, from_date=None, to_date=None, freq='minute'):
     else:
         raise Exception('Not supported contract.')
 
-    sql = f"SELECT id, last_traded FROM futures_contract WHERE symbol='{contract}'"
-    cid, last_traded = ENGINE.execute(sql).cursor.fetchone()
+    sql = f'''
+        SELECT id, tick_size, multiplier, last_traded 
+        FROM futures_contract
+        WHERE symbol='{contract}'
+        '''
+    cid, tick_size, multiplier, last_traded = ENGINE.execute(sql).cursor.fetchone()
 
     sql = f'''
       SELECT datetime, open, high, low, close, volume, open_interest
@@ -89,31 +97,29 @@ def get_ohlc(contract, from_date=None, to_date=None, freq='minute'):
     sql += ' ORDER BY datetime'
 
     df = pd.read_sql(sql, ENGINE, parse_dates=True, index_col=['datetime'])
-    df.attrs['last_traded'] = last_traded
-    df.attrs['contract_id'] = cid
     df.attrs['name'] = contract
     df.attrs['root_symbol'] = root_symbol
+    df.attrs['multiplier'] = multiplier
+    df.attrs['tick_size'] = tick_size
+    df.attrs['last_traded'] = last_traded
     return df
 
 
 class Database(dbfeed.Database):
-    def __init__(self, check_condition=True):
+    def __init__(self, grace_days=7, check_condition=True):
         def _check_date(dt0, dt1):
-            # dt_year, dt_week, _ = dt0.isocalendar()
-            # exp_year, exp_week, _ = dt1.isocalendar()
-            # return (dt_year, dt_week) == (exp_year, exp_week)
-            return dt0 >= dt1 - timedelta(days=5)
+            return dt0 >= dt1 - timedelta(days=grace_days)
 
         def _check_condition(row0, row1):
-            return row0['open_interest'] <= row1['open_interest'] or \
-                   row0['volume'] <= row1['volume']
+            ret = True
+            if check_condition:
+                ret = row0['open_interest'] <= row1['open_interest'] or \
+                      row0['volume'] <= row1['volume']
+            return ret
 
         super(Database, self).__init__()
         self.check_date = _check_date
-
-        self.check_condition = None
-        if check_condition:
-            self.check_condition = _check_condition
+        self.check_condition = _check_condition
 
     def addBar(self, instrument, bar, frequency):
         raise Exception('Not supported.')
@@ -138,14 +144,13 @@ class Database(dbfeed.Database):
         i_freq = {'day': Frequency.DAY, 'minute': Frequency.MINUTE}[frequency]
 
         df = dfs.pop(0)
-        df_iter = df.iterrows()
-        last_traded = df.attrs['last_traded']
-
-        # LOGGING: enter the first contract
         adjustment = 0
-        print(f"{df.attrs['name']}({df.index[0]}): {adjustment}")
+
+        logger.Formatter.DATETIME_HOOK = lambda: df.index[0]
+        log.debug(f"{df.attrs['name']}: {adjustment}")
 
         ret = []
+        df_iter = df.iterrows()
         while True:
             try:
                 dt, row = next(df_iter)
@@ -154,24 +159,27 @@ class Database(dbfeed.Database):
 
             # To aviod lookahead bias
             # place this block before the contract roll checking
+            mul = df.attrs['multiplier']
             ret.append(BasicBar(
                 dt,
-                row['open'],
-                row['high'],
-                row['low'],
-                row['close'],
+                row['open'] * mul,
+                row['high'] * mul,
+                row['low'] * mul,
+                row['close'] * mul,
                 row['volume'],
-                row['close'] + adjustment,  # forward adjustment, use `add` method
+                # forward adjustment, use `add` method
+                (row['close'] + adjustment) * mul,
                 frequency=i_freq,
-                extra={'open_interest': row['open_interest']},
+                extra={**df.attrs, 'open_interest': row['open_interest']},
             ))
 
             # Futures Roll Method
             # first check date then check volume and open interest
-            if self.check_date(dt, last_traded):
+            if self.check_date(dt, df.attrs['last_traded']):
                 if len(dfs) and (self.check_condition is None or
                                  self.check_condition(row, dfs[0].loc[dt])):
                     df = dfs.pop(0)
+                    contract = df.attrs['name']
 
                     # forward adjustment factor
                     adjustment += row['close'] - df.loc[dt, 'close']
@@ -181,23 +189,32 @@ class Database(dbfeed.Database):
                     df = df.iloc[idx + 1:]
 
                     df_iter = df.iterrows()
-                    last_traded = df.attrs['last_traded']
 
-                    # LOGGING: enter the successive contract
-                    print(f"{df.attrs['name']}({dt}): {adjustment}")
+                    logger.Formatter.DATETIME_HOOK = lambda: dt
+                    log.debug(f"{df.attrs['name']}: {adjustment}")
+
+            # reset the global formatter
+            logger.Formatter.DATETIME_HOOK = None
         return ret
 
 
 class Feed(membf.BarFeed):
-    def __init__(self, check_condition=True, maxLen=None):
+    def __init__(self, grace_days=7, check_condition=True, maxLen=None):
         super(Feed, self).__init__(Frequency.DAY, maxLen)
-        self.__db = Database(check_condition)
+        self.__db = Database(grace_days, check_condition)
 
     def barsHaveAdjClose(self):
         return True
 
     def getDatabase(self):
         return self.__db
+
+    def setDebugMode(self, debugOn):
+        """
+        Debug and print roll dates and forward adjustment factors
+        """
+        level = logging.DEBUG if debugOn else logging.INFO
+        log.setLevel(level)
 
     def loadBars(self, instrument, frequency, fromDateTime=None, toDateTime=None, included=None):
         if isinstance(instrument, str):
