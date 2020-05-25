@@ -64,6 +64,9 @@ class DrawDownHelper2(DrawDownHelper):
     def __init__(self):
         super(DrawDownHelper2, self).__init__()
 
+    def getCurrentDrawDown(self):
+        raise Exception('Not supported.')
+
     def getMaxDrawDown(self):
         return self.getLowWatermark() - self.getHighWatermark()
 
@@ -72,11 +75,14 @@ class DrawDown(stratanalyzer.StrategyAnalyzer):
     """A :class:`pyalgotrade.stratanalyzer.StrategyAnalyzer` that calculates
     max. drawdown and longest drawdown duration for the portfolio."""
 
-    def __init__(self):
+    def __init__(self, pnl_based=False):
         super(DrawDown, self).__init__()
         self.__maxDD = 0
         self.__longestDDDuration = datetime.timedelta()
-        self.__currDrawDown = DrawDownHelper2()
+        if pnl_based:
+            self.__currDrawDown = DrawDownHelper2()
+        else:
+            self.__currDrawDown = DrawDownHelper()
 
     def calculateEquity(self, strat):
         return strat.getBroker().getEquity()
