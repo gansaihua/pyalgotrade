@@ -85,3 +85,25 @@ class VolumeShareSlippage(SlippageModel):
         else:
             ret = price * (1 - impactPct)
         return ret
+
+
+class FixedSlippage(SlippageModel):
+    """
+    A fixed slippage model
+    The slippage is calculated by adding the price impact constant by the constant.
+
+    :param priceImpact: Defines how large of an impact your order will have on the backtester's price calculation.
+    :type priceImpact: float.
+    """
+
+    def __init__(self, priceImpact):
+        super(FixedSlippage, self).__init__()
+        self.__priceImpact = priceImpact
+
+    def calculatePrice(self, order, price, quantity, bar, volumeUsed):
+        assert bar.getVolume(), "Can't use 0 volume bars with VolumeShareSlippage"
+        if order.isBuy():
+            ret = price + self.__priceImpact
+        else:
+            ret = price - self.__priceImpact
+        return ret

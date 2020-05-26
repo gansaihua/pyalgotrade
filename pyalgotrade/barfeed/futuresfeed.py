@@ -11,7 +11,7 @@ log = logger.getLogger(__name__)
 
 ENGINE = create_engine(
     'mysql+pymysql://rm-2zedo2m914a92z7rhfo.mysql.rds.aliyuncs.com',
-    connect_args={'read_default_file': '/share/my.cnf'},
+    connect_args={'read_default_file': 'D:/mysql.cnf'},
 )
 
 
@@ -46,7 +46,7 @@ def get_contracts(root_symbol, from_date=None, to_date=None, included=None):
 
     if to_date is not None:
         to_date = pd.Timestamp(to_date)
-        sql += f" AND last_traded <= '{to_date}'"
+        sql += f" AND contract_issued <= '{to_date}'"
 
     sql += ' ORDER BY last_traded'
 

@@ -18,80 +18,14 @@
 .. moduleauthor:: Gabriel Martin Becedillas Ruiz <gabriel.becedillas@gmail.com>
 """
 
-import abc
-
 import six
 
 from pyalgotrade import broker
 from pyalgotrade.broker import fillstrategy
 from pyalgotrade import logger
 import pyalgotrade.bar
-
-
-######################################################################
-# Commission models
-
-@six.add_metaclass(abc.ABCMeta)
-class Commission(object):
-    """Base class for implementing different commission schemes.
-
-    .. note::
-        This is a base class and should not be used directly.
-    """
-
-    @abc.abstractmethod
-    def calculate(self, order, price, quantity):
-        """Calculates the commission for an order execution.
-
-        :param order: The order being executed.
-        :type order: :class:`pyalgotrade.broker.Order`.
-        :param price: The price for each share.
-        :type price: float.
-        :param quantity: The order size.
-        :type quantity: float.
-        :rtype: float.
-        """
-        raise NotImplementedError()
-
-
-class NoCommission(Commission):
-    """A :class:`Commission` class that always returns 0."""
-
-    def calculate(self, order, price, quantity):
-        return 0
-
-
-class FixedPerTrade(Commission):
-    """A :class:`Commission` class that charges a fixed amount for the whole trade.
-
-    :param amount: The commission for an order.
-    :type amount: float.
-    """
-    def __init__(self, amount):
-        super(FixedPerTrade, self).__init__()
-        self.__amount = amount
-
-    def calculate(self, order, price, quantity):
-        ret = 0
-        # Only charge the first fill.
-        if order.getExecutionInfo() is None:
-            ret = self.__amount
-        return ret
-
-
-class TradePercentage(Commission):
-    """A :class:`Commission` class that charges a percentage of the whole trade.
-
-    :param percentage: The percentage to charge. 0.01 means 1%, and so on. It must be smaller than 1.
-    :type percentage: float.
-    """
-    def __init__(self, percentage):
-        super(TradePercentage, self).__init__()
-        assert(percentage < 1)
-        self.__percentage = percentage
-
-    def calculate(self, order, price, quantity):
-        return price * quantity * self.__percentage
+# for backward compatibility
+from .commission import NoCommission, FixedPerShare, FixedPerTrade, TradePercentage
 
 
 ######################################################################
@@ -184,7 +118,7 @@ class Broker(broker.Broker):
     def __init__(self, cash, barFeed, commission=None):
         super(Broker, self).__init__()
 
-        assert(cash >= 0)
+        assert (cash >= 0)
         self.__cash = cash
         if commission is None:
             self.__commission = NoCommission()
@@ -216,13 +150,13 @@ class Broker(broker.Broker):
         return ret
 
     def _registerOrder(self, order):
-        assert(order.getId() not in self.__activeOrders)
-        assert(order.getId() is not None)
+        assert (order.getId() not in self.__activeOrders)
+        assert (order.getId() is not None)
         self.__activeOrders[order.getId()] = order
 
     def _unregisterOrder(self, order):
-        assert(order.getId() in self.__activeOrders)
-        assert(order.getId() is not None)
+        assert (order.getId() in self.__activeOrders)
+        assert (order.getId() is not None)
         del self.__activeOrders[order.getId()]
 
     def getLogger(self):
@@ -342,14 +276,14 @@ class Broker(broker.Broker):
 
         if order.isBuy():
             cost = price * quantity * -1
-            assert(cost < 0)
+            assert (cost < 0)
             sharesDelta = quantity
         elif order.isSell():
             cost = price * quantity
-            assert(cost > 0)
+            assert (cost > 0)
             sharesDelta = quantity * -1
         else:  # Unknown action
-            assert(False)
+            assert (False)
 
         commission = self.getCommission().calculate(order, price, quantity)
         cost -= commission
@@ -385,7 +319,7 @@ class Broker(broker.Broker):
                     broker.OrderEvent(order, broker.OrderEvent.Type.PARTIALLY_FILLED, orderExecutionInfo)
                 )
             else:
-                assert(False)
+                assert (False)
         else:
             self.__logger.debug("Not enough cash to fill %s order [%s] for %s share/s" % (
                 order.getInstrument(),
@@ -463,8 +397,8 @@ class Broker(broker.Broker):
             else:
                 # If an order is not active it should be because it was canceled in this same loop and it should
                 # have been removed.
-                assert(order.isCanceled())
-                assert(order not in self.__activeOrders)
+                assert (order.isCanceled())
+                assert (order not in self.__activeOrders)
 
     def onBars(self, dateTime, bars):
         # Let the fill strategy know that new bars are being processed.
