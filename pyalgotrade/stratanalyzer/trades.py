@@ -52,7 +52,7 @@ class Trades(stratanalyzer.StrategyAnalyzer):
         self.__evenCommissions = []
         self.__evenTrades = 0
         self.__posTrackers = {}
-        # by trade action
+        # by trade direction
         self.__longPnL = []
         self.__longReturns = []
         self.__longCommissions = []

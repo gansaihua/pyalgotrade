@@ -3,16 +3,16 @@ import logging
 import pandas as pd
 from datetime import timedelta
 from sqlalchemy import create_engine
+from pyalgotrade import logger
 from pyalgotrade.bar import BasicBar, Frequency
 from pyalgotrade.barfeed import dbfeed, membf
-from pyalgotrade import logger
 
-log = logger.getLogger(__name__)
-
+DEFAULT_GRACE_DAYS = 8
 ENGINE = create_engine(
     'mysql+pymysql://rm-2zedo2m914a92z7rhfo.mysql.rds.aliyuncs.com',
-    connect_args={'read_default_file': 'D:/mysql.cnf'},
+    connect_args={'read_default_file': '/share/my.cnf'},
 )
+log = logger.getLogger(__name__)
 
 
 def get_contracts(root_symbol, from_date=None, to_date=None, included=None):
@@ -105,109 +105,101 @@ def get_ohlc(contract, from_date=None, to_date=None, freq='minute'):
     return df
 
 
-class Database(dbfeed.Database):
-    def __init__(self, grace_days=7, check_condition=True):
-        def _check_date(dt0, dt1):
-            return dt0 >= dt1 - timedelta(days=grace_days)
+def check_date(dt0, dt1, grace_days=DEFAULT_GRACE_DAYS):
+    return dt0 >= dt1 - timedelta(days=grace_days)
 
-        def _check_condition(row0, row1):
-            ret = True
-            if check_condition:
-                ret = row0['open_interest'] <= row1['open_interest'] or \
-                      row0['volume'] <= row1['volume']
-            return ret
 
-        super(Database, self).__init__()
-        self.check_date = _check_date
-        self.check_condition = _check_condition
+def check_condition(row0, row1):
+    return row0['open_interest'] <= row1['open_interest'] or \
+           row0['volume'] <= row1['volume']
 
-    def addBar(self, instrument, bar, frequency):
-        raise Exception('Not supported.')
 
-    def getBars(self, instrument, frequency, timezone=None, fromDateTime=None, toDateTime=None):
-        dfs = []
-        if isinstance(instrument, (list, tuple)):
-            for i in instrument:
-                df = get_ohlc(i, fromDateTime, toDateTime, frequency)
-                if not df.empty:
-                    dfs.append(df)
-        elif isinstance(instrument, str):
-            df = get_ohlc(instrument, fromDateTime, toDateTime, frequency)
+def getBars(instrument, frequency, fromDateTime=None, toDateTime=None, grace_days=DEFAULT_GRACE_DAYS):
+    dfs = []
+    if isinstance(instrument, (list, tuple)):
+        for i in instrument:
+            df = get_ohlc(i, fromDateTime, toDateTime, frequency)
             if not df.empty:
                 dfs.append(df)
-        else:
-            raise Exception('Not supported instrument.')
+    elif isinstance(instrument, str):
+        df = get_ohlc(instrument, fromDateTime, toDateTime, frequency)
+        if not df.empty:
+            dfs.append(df)
+    else:
+        raise Exception('Not supported instrument.')
 
-        if len(dfs) > 1:
-            dfs = sorted(dfs, key=lambda x: x.attrs['last_traded'])
+    if len(dfs) > 1:
+        dfs = sorted(dfs, key=lambda x: x.attrs['last_traded'])
 
-        i_freq = {'day': Frequency.DAY, 'minute': Frequency.MINUTE}[frequency]
+    i_freq = {'day': Frequency.DAY, 'minute': Frequency.MINUTE}[frequency]
 
-        df = dfs.pop(0)
-        adjustment = 0
+    df = dfs.pop(0)
+    adjustment = 0
 
-        logger.Formatter.DATETIME_HOOK = lambda: df.index[0]
-        log.debug(f"{df.attrs['name']}: {adjustment}")
+    logger.Formatter.DATETIME_HOOK = lambda: df.index[0]
+    log.debug(f"{df.attrs['name']}: {adjustment}")
 
-        ret = []
-        df_iter = df.iterrows()
-        while True:
-            try:
-                dt, row = next(df_iter)
-            except StopIteration:
-                break
+    ret = []
+    df_iter = df.iterrows()
+    while True:
+        try:
+            dt, row = next(df_iter)
+        except StopIteration:
+            break
 
-            # To aviod lookahead bias
-            # place this block before the contract roll checking
-            mul = df.attrs['multiplier']
-            ret.append(BasicBar(
-                dt,
-                row['open'] * mul,
-                row['high'] * mul,
-                row['low'] * mul,
-                row['close'] * mul,
-                row['volume'],
-                # forward adjustment, use `add` method
-                (row['close'] + adjustment) * mul,
-                frequency=i_freq,
-                extra={**df.attrs, 'open_interest': row['open_interest']},
-            ))
+        # To aviod lookahead bias
+        # place this block before the contract roll checking
+        mul = df.attrs['multiplier']
+        ret.append(BasicBar(
+            dt,
+            row['open'] * mul,
+            row['high'] * mul,
+            row['low'] * mul,
+            row['close'] * mul,
+            row['volume'],
+            # forward adjustment, use `add` method
+            (row['close'] + adjustment) * mul,
+            frequency=i_freq,
+            extra={**df.attrs, 'open_interest': row['open_interest']},
+        ))
 
-            # Futures Roll Method
-            # first check date then check volume and open interest
-            if self.check_date(dt, df.attrs['last_traded']):
-                if len(dfs) and (self.check_condition is None or
-                                 self.check_condition(row, dfs[0].loc[dt])):
-                    df = dfs.pop(0)
-                    contract = df.attrs['name']
+        # Futures Roll Method
+        # first check date then check open interest and volume
+        if check_date(dt, df.attrs['last_traded'], grace_days):
+            if len(dfs) and check_condition(row, dfs[0].loc[dt]):
+                df = dfs.pop(0)
+                contract = df.attrs['name']
 
-                    # forward adjustment factor
-                    adjustment += row['close'] - df.loc[dt, 'close']
+                # forward adjustment factor
+                adjustment += row['close'] - df.loc[dt, 'close']
 
-                    # dt is added, so we skip it
-                    idx = df.index.get_loc(dt)
-                    df = df.iloc[idx + 1:]
+                # dt is added, so we skip it
+                idx = df.index.get_loc(dt)
+                df = df.iloc[idx + 1:]
 
-                    df_iter = df.iterrows()
+                df_iter = df.iterrows()
 
-                    logger.Formatter.DATETIME_HOOK = lambda: dt
-                    log.debug(f"{df.attrs['name']}: {adjustment}")
+                logger.Formatter.DATETIME_HOOK = lambda: dt
+                log.debug(f"{df.attrs['name']}: {adjustment}")
 
-            # reset the global formatter
-            logger.Formatter.DATETIME_HOOK = None
-        return ret
+        # reset the global formatter
+        logger.Formatter.DATETIME_HOOK = None
+    return ret
 
 
 class Feed(membf.BarFeed):
-    def __init__(self, grace_days=7, check_condition=True, maxLen=None):
-        super(Feed, self).__init__(Frequency.DAY, maxLen)
-        self.__db = Database(grace_days, check_condition)
+    def __init__(self, frequency, maxLen=None):
+        if frequency == 'minute':
+            frequency = Frequency.MINUTE
+        elif frequency == 'day':
+            frequency = Frequency.DAY
+        else:
+            raise Exception('Only `day` and `minute` are allowed.')
+        
+        super(Feed, self).__init__(frequency, maxLen)
 
     def barsHaveAdjClose(self):
         return True
-
-    def getDatabase(self):
-        return self.__db
 
     def setDebugMode(self, debugOn):
         """
@@ -216,7 +208,8 @@ class Feed(membf.BarFeed):
         level = logging.DEBUG if debugOn else logging.INFO
         log.setLevel(level)
 
-    def loadBars(self, instrument, frequency, fromDateTime=None, toDateTime=None, included=None):
+    def loadBars(self, instrument, fromDateTime=None, toDateTime=None,
+                 included=None, grace_days=DEFAULT_GRACE_DAYS):
         if isinstance(instrument, str):
             root_symbol = instrument
             contracts = get_contracts(instrument, fromDateTime, toDateTime, included)
@@ -237,10 +230,11 @@ class Feed(membf.BarFeed):
         else:
             raise Exception('Not supported instrument.')
 
-        bars = self.getDatabase().getBars(
+        bars = getBars(
             contracts,
-            frequency,
+            'minute' if self.getFrequency() == Frequency.MINUTE else 'day',
             fromDateTime=fromDateTime,
             toDateTime=toDateTime,
+            grace_days=grace_days,
         )
         self.addBarsFromSequence(root_symbol, bars)
