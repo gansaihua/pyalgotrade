@@ -52,6 +52,13 @@ class Trades(stratanalyzer.StrategyAnalyzer):
         self.__evenCommissions = []
         self.__evenTrades = 0
         self.__posTrackers = {}
+        # by trade action
+        self.__longPnL = []
+        self.__longReturns = []
+        self.__longCommissions = []
+        self.__shortPnL = []
+        self.__shortReturns = []
+        self.__shortCommissions = []
 
     def __updateTrades(self, posTracker):
         price = 0  # The price doesn't matter since the position should be closed.
@@ -75,6 +82,15 @@ class Trades(stratanalyzer.StrategyAnalyzer):
         self.__allReturns.append(netReturn)
         self.__allCommissions.append(posTracker.getCommissions())
 
+        if posTracker.isLong():
+            self.__longPnL.append(netProfit)
+            self.__longReturns.append(netReturn)
+            self.__longCommissions.append(posTracker.getCommissions())
+        else:
+            self.__shortPnL.append(netProfit)
+            self.__shortReturns.append(netReturn)
+            self.__shortCommissions.append(posTracker.getCommissions())
+
         posTracker.reset()
 
     def __updatePosTracker(self, posTracker, price, commission, quantity):
@@ -89,33 +105,33 @@ class Trades(stratanalyzer.StrategyAnalyzer):
                     posTracker.sell(currentShares, price, commission)
                     self.__updateTrades(posTracker)
                 elif newShares > 0:  # Sell some shares.
-                    posTracker.sell(quantity*-1, price, commission)
+                    posTracker.sell(quantity * -1, price, commission)
                 else:  # Exit long and enter short. Use proportional commissions.
-                    proportionalCommission = commission * currentShares / float(quantity*-1)
+                    proportionalCommission = commission * currentShares / float(quantity * -1)
                     posTracker.sell(currentShares, price, proportionalCommission)
                     self.__updateTrades(posTracker)
                     proportionalCommission = commission * newShares / float(quantity)
-                    posTracker.sell(newShares*-1, price, proportionalCommission)
+                    posTracker.sell(newShares * -1, price, proportionalCommission)
         elif currentShares < 0:  # Current position is short
             if quantity < 0:  # Increase short position
-                posTracker.sell(quantity*-1, price, commission)
+                posTracker.sell(quantity * -1, price, commission)
             else:
                 newShares = currentShares + quantity
                 if newShares == 0:  # Exit short.
-                    posTracker.buy(currentShares*-1, price, commission)
+                    posTracker.buy(currentShares * -1, price, commission)
                     self.__updateTrades(posTracker)
                 elif newShares < 0:  # Re-buy some shares.
                     posTracker.buy(quantity, price, commission)
                 else:  # Exit short and enter long. Use proportional commissions.
                     proportionalCommission = commission * currentShares * -1 / float(quantity)
-                    posTracker.buy(currentShares*-1, price, proportionalCommission)
+                    posTracker.buy(currentShares * -1, price, proportionalCommission)
                     self.__updateTrades(posTracker)
                     proportionalCommission = commission * newShares / float(quantity)
                     posTracker.buy(newShares, price, proportionalCommission)
         elif quantity > 0:
             posTracker.buy(quantity, price, commission)
         else:
-            posTracker.sell(quantity*-1, price, commission)
+            posTracker.sell(quantity * -1, price, commission)
 
     def __onOrderEvent(self, broker_, orderEvent):
         # Only interested in filled or partially filled orders.
@@ -141,7 +157,7 @@ class Trades(stratanalyzer.StrategyAnalyzer):
         elif action in [broker.Order.Action.SELL, broker.Order.Action.SELL_SHORT]:
             quantity = execInfo.getQuantity() * -1
         else:  # Unknown action
-            assert(False)
+            assert (False)
 
         self.__updatePosTracker(posTracker, price, commission, quantity)
 
@@ -203,3 +219,35 @@ class Trades(stratanalyzer.StrategyAnalyzer):
     def getCommissionsForEvenTrades(self):
         """Returns a numpy.array with the commissions for each trade whose net profit was 0."""
         return np.asarray(self.__evenCommissions)
+
+    def getLongCount(self):
+        """Returns the number of long trades."""
+        return len(self.__longPnL)
+
+    def getLongPnL(self):
+        """Returns a numpy.array with the pnl for each long position trade."""
+        return np.asarray(self.__longPnL)
+
+    def getLongReturns(self):
+        """Returns a numpy.array with the returns for each long position trade."""
+        return np.asarray(self.__longReturns)
+
+    def getCommissionsForLongTrades(self):
+        """Returns a numpy.array with the pnl for each long position trade."""
+        return np.asarray(self.__longCommissions)
+
+    def getShortCount(self):
+        """Returns the number of short trades."""
+        return len(self.__shortPnL)
+
+    def getShortPnL(self):
+        """Returns a numpy.array with the pnl for each short position trade."""
+        return np.asarray(self.__shortPnL)
+
+    def getShortReturns(self):
+        """Returns a numpy.array with the returns for each short position trade."""
+        return np.asarray(self.__shortReturns)
+
+    def getCommissionsForShortTrades(self):
+        """Returns a numpy.array with the pnl for each short position trade."""
+        return np.asarray(self.__shortCommissions)

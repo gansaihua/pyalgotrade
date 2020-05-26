@@ -75,6 +75,10 @@ class PositionTracker(object):
         self.__position = 0.0
         self.__commissions = 0.0
         self.__totalCommited = 0.0  # The total amount commited to this position.
+        self.__isLong = None  # Trade direction for trades analyzer use
+
+    def isLong(self):
+        return self.__isLong
 
     def getPosition(self):
         return self.__position
@@ -109,10 +113,11 @@ class PositionTracker(object):
         self.__avgPrice = price
         self.__position = quantity
         self.__totalCommited = self.__avgPrice * abs(self.__position)
+        self.__isLong = quantity > 0
 
     def __extendCurrentPosition(self, quantity, price):
         newPosition = self.__instrumentTraits.roundQuantity(self.__position + quantity)
-        self.__avgPrice = (self.__avgPrice*abs(self.__position) + price*abs(quantity)) / abs(float(newPosition))
+        self.__avgPrice = (self.__avgPrice * abs(self.__position) + price * abs(quantity)) / abs(float(newPosition))
         self.__position = newPosition
         self.__totalCommited = self.__avgPrice * abs(self.__position)
 
@@ -149,7 +154,7 @@ class PositionTracker(object):
                     self.__reduceCurrentPosition(quantity, price)
                 else:
                     newPos = self.__position + quantity
-                    self.__reduceCurrentPosition(self.__position*-1, price)
+                    self.__reduceCurrentPosition(self.__position * -1, price)
                     self.__openNewPosition(newPos, price)
 
         self.__commissions += commission
