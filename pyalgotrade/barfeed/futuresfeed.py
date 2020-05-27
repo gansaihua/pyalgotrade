@@ -1,17 +1,21 @@
 import re
 import logging
+import numpy as np
 import pandas as pd
 from datetime import timedelta
 from sqlalchemy import create_engine
 from pyalgotrade import logger
 from pyalgotrade.bar import BasicBar, Frequency
-from pyalgotrade.barfeed import dbfeed, membf
+from pyalgotrade.barfeed import membf
 
-DEFAULT_GRACE_DAYS = 8
+# days before last traded of contract to roll by calendar
+DEFAULT_GRACE_DAYS = 5
+
 ENGINE = create_engine(
     'mysql+pymysql://rm-2zedo2m914a92z7rhfo.mysql.rds.aliyuncs.com',
-    connect_args={'read_default_file': '/share/my.cnf'},
+    connect_args={'read_default_file': 'd:/mysql.cnf'},
 )
+
 log = logger.getLogger(__name__)
 
 
@@ -147,28 +151,54 @@ def getBars(instrument, frequency, fromDateTime=None, toDateTime=None, grace_day
         except StopIteration:
             break
 
-        # To aviod lookahead bias
-        # place this block before the contract roll checking
+        # Futures Roll Method - part 1
+        # roll by calendar
+        # since there is no look-ahead bias, we can roll before adding bar
+        if len(dfs) and grace_days > DEFAULT_GRACE_DAYS and check_date(dt, df.attrs['last_traded']):
+            df = dfs.pop(0)
+
+            # forward adjustment factor
+            adjustment += row['close'] - df.loc[dt, 'close']
+
+            df_iter = df.loc[dt:].iterrows()
+            dt, row = next(df_iter)
+
+            logger.Formatter.DATETIME_HOOK = lambda: dt
+            log.debug(f"{df.attrs['name']}: {adjustment}")
+
+        # bars without trade have only closing price
+        open_ = row['open']
+        if open_ is None or np.isnan(open_):
+            open_ = row['close']
+
+        high = row['high']
+        if high is None or np.isnan(high):
+            high = row['close']
+
+        low = row['low']
+        if low is None or np.isnan(low):
+            low = row['close']
+
         mul = df.attrs['multiplier']
         ret.append(BasicBar(
             dt,
-            row['open'] * mul,
-            row['high'] * mul,
-            row['low'] * mul,
+            open_ * mul,
+            high * mul,
+            low * mul,
             row['close'] * mul,
-            row['volume'],
+            row['volume'] or 0,
             # forward adjustment, use `add` method
             (row['close'] + adjustment) * mul,
             frequency=i_freq,
-            extra={**df.attrs, 'open_interest': row['open_interest']},
+            extra={**df.attrs, 'open_interest': row['open_interest'] or 0},
         ))
 
-        # Futures Roll Method
-        # first check date then check open interest and volume
-        if check_date(dt, df.attrs['last_traded'], grace_days):
-            if len(dfs) and check_condition(row, dfs[0].loc[dt]):
+        # Futures Roll Method - part 2
+        # roll by open interest and volume
+        # to avoid lookahead bias, we should roll after adding bar
+        if len(dfs) and check_date(dt, df.attrs['last_traded'], grace_days):
+            if dt in dfs[0].index and check_condition(row, dfs[0].loc[dt]):
                 df = dfs.pop(0)
-                contract = df.attrs['name']
 
                 # forward adjustment factor
                 adjustment += row['close'] - df.loc[dt, 'close']
@@ -189,13 +219,7 @@ def getBars(instrument, frequency, fromDateTime=None, toDateTime=None, grace_day
 
 class Feed(membf.BarFeed):
     def __init__(self, frequency, maxLen=None):
-        if frequency == 'minute':
-            frequency = Frequency.MINUTE
-        elif frequency == 'day':
-            frequency = Frequency.DAY
-        else:
-            raise Exception('Only `day` and `minute` are allowed.')
-        
+        assert frequency in (Frequency.MINUTE, Frequency.DAY), 'Only 86400 and 60 are supported.'
         super(Feed, self).__init__(frequency, maxLen)
 
     def barsHaveAdjClose(self):
