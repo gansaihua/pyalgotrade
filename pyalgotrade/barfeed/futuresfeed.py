@@ -1,3 +1,4 @@
+import os
 import re
 import logging
 import numpy as np
@@ -13,7 +14,7 @@ DEFAULT_GRACE_DAYS = 5
 
 ENGINE = create_engine(
     'mysql+pymysql://rm-2zedo2m914a92z7rhfo.mysql.rds.aliyuncs.com',
-    connect_args={'read_default_file': 'd:/mysql.cnf'},
+    connect_args={'read_default_file': os.path.expanduser('~/my.cnf')},
 )
 
 log = logger.getLogger(__name__)
@@ -166,32 +167,21 @@ def getBars(instrument, frequency, fromDateTime=None, toDateTime=None, grace_day
             logger.Formatter.DATETIME_HOOK = lambda: dt
             log.debug(f"{df.attrs['name']}: {adjustment}")
 
-        # bars without trade have only closing price
-        open_ = row['open']
-        if open_ is None or np.isnan(open_):
-            open_ = row['close']
-
-        high = row['high']
-        if high is None or np.isnan(high):
-            high = row['close']
-
-        low = row['low']
-        if low is None or np.isnan(low):
-            low = row['close']
-
-        mul = df.attrs['multiplier']
-        ret.append(BasicBar(
-            dt,
-            open_ * mul,
-            high * mul,
-            low * mul,
-            row['close'] * mul,
-            row['volume'] or 0,
-            # forward adjustment, use `add` method
-            (row['close'] + adjustment) * mul,
-            frequency=i_freq,
-            extra={**df.attrs, 'open_interest': row['open_interest'] or 0},
-        ))
+        # we skip the day without trades
+        if row['volume'] > 0 and row['open'] is not None and not np.isnan(row['open']):
+            mul = df.attrs['multiplier']
+            ret.append(BasicBar(
+                dt,
+                row['open'] * mul,
+                row['high'] * mul,
+                row['low'] * mul,
+                row['close'] * mul,
+                row['volume'],
+                # forward adjustment, use `add` method
+                (row['close'] + adjustment) * mul,
+                frequency=i_freq,
+                extra={**df.attrs, 'open_interest': row['open_interest']},
+            ))
 
         # Futures Roll Method - part 2
         # roll by open interest and volume
