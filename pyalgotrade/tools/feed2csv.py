@@ -22,12 +22,12 @@ TRADED_INSTRUMENTS = {
     'V': {'included': [1, 5, 9], 'grace_days': 200},
     'PP': {'included': [1, 5, 9], 'grace_days': 200},
     # SHF
-    'CU': {},
-    'AL': {},
-    'ZN': {},
-    'PB': {},
-    'NI': {},
-    'SN': {},
+    'CU': {'grace_days': 60},
+    'AL': {'grace_days': 60},
+    'ZN': {'grace_days': 60},
+    'PB': {'grace_days': 60},
+    'NI': {'grace_days': 60},
+    'SN': {'grace_days': 60},
     'AU': {'included': [6, 12], 'grace_days': 200},
     'AG': {'included': [6, 12], 'grace_days': 200},
     'BU': {'included': [6, 9, 12], 'grace_days': 200},
@@ -37,8 +37,8 @@ TRADED_INSTRUMENTS = {
     'RU': {'included': [1, 5, 9], 'grace_days': 200},
     'SP': {'included': [1, 5, 9], 'grace_days': 200},
     # INE
-    'SC': {},
-    'NR': {},
+    'SC': {'grace_days': 60},
+    'NR': {'grace_days': 60},
     # CZC
     'CF': {'included': [1, 5, 9], 'grace_days': 200},
     'SR': {'included': [1, 5, 9], 'grace_days': 200},
@@ -67,12 +67,9 @@ TRADED_INSTRUMENTS = {
 def worker(rs, f, debug=False):
     csvfile = open(os.path.expanduser(f'~/tmp/{rs}.csv'), 'w', newline='')
     csvwriter = csv.writer(csvfile)
-    csvwriter.writerow(["Date Time", "Open", "High", "Low", "Close", "Volume", "Adj Close", 'Open Interest'])
+    csvwriter.writerow(["Date Time", "Open", "High", "Low", "Close", "Volume", "Adj Close", 'open_interest'])
 
-    if f == 86400:
-        datetime_format = "%Y-%m-%d"
-    else:
-        datetime_format = "%Y-%m-%d %H:%M:%S"
+    datetime_format = "%Y-%m-%d %H:%M:%S"
 
     def on_bar(dateTime, value):
         bar_ = value[rs]
