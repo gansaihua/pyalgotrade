@@ -1,95 +1,56 @@
-"""
-Forward adjustment for rollover
-"""
-
 import os
 import re
-import numpy as np
+import datetime
 import pandas as pd
-from datetime import timedelta
+from more_itertools import pairwise
 from sqlalchemy import create_engine
-from pyalgotrade import logger
 from pyalgotrade.bar import BasicBar, Frequency
 from pyalgotrade.barfeed import membf
 
-# days before last traded of contract to roll by calendar
-DEFAULT_GRACE_DAYS = 5
-
+OHLC = ['open', 'high', 'low', 'close']
 ENGINE = create_engine(
     'mysql+pymysql://rm-2zedo2m914a92z7rhfo.mysql.rds.aliyuncs.com',
     connect_args={'read_default_file': os.path.expanduser('~/my.cnf')},
 )
 
+DEFAULT_VERSION = 1
 
-def get_contracts(root_symbol, from_date=None, to_date=None, included=None):
-    """
-    :param root_symbol: root symbol of contracts, e.g. IF, A
-    :param from_date: datetime alike
-    :param to_date: datetime alike
-    :param freq: `minute` or `day`
-    :param inclued: None or list e.g. [6], [3, 6, 9, 12], contracts of specific months to include
-    :return: list of contract symbols
-    """
 
+def get_cf(root_symbol, version=DEFAULT_VERSION):
     sql = f'''
-    SELECT c.symbol
-    FROM futures_contract AS c
-    JOIN futures_rootsymbol AS rs
-    ON c.root_symbol_id = rs.id
-    WHERE rs.symbol = '{root_symbol}' 
-    '''
-
-    if included is not None:
-        if len(included) == 1:
-            sql += f' AND RIGHT(c.symbol, 2) = {int(included[0]):02}'
-        else:
-            included = (f'{int(x):02}' for x in included)
-            sql += f' AND RIGHT(c.symbol, 2) IN {tuple(included)}'
-
-    if from_date is not None:
-        from_date = pd.Timestamp(from_date)
-        sql += f" AND last_traded >= '{from_date}'"
-
-    if to_date is not None:
-        to_date = pd.Timestamp(to_date)
-        sql += f" AND contract_issued <= '{to_date}'"
-
-    sql += ' ORDER BY last_traded'
-
-    symbols = ENGINE.execute(sql).cursor.fetchall()
-    return [symbol[0] for symbol in symbols]
+      SELECT datetime, contract_id 
+      FROM futures_continuousfutures
+      WHERE root_symbol_id = (
+        SELECT id FROM futures_rootsymbol
+        WHERE symbol='{root_symbol}'
+      )
+      AND version = {version}
+      '''
+    df = pd.read_sql(sql, ENGINE, parse_dates=['datetime'])
+    return df
 
 
-def get_ohlc(contract, from_date=None, to_date=None, freq='minute'):
+def get_ohlc(contract, freq='minute', from_date=None, to_date=None, asc=True):
     """
     :param contract: symbol of contract str, e.g. IF1605, A2003
-    :param from_date: datetime alike
-    :param to_date: datetime alike
+    :param from_date: datetime alike, inclusive
+    :param to_date: datetime alike, exclusive
     :param freq: `minute` or `day`
-    :return: pd.DataFrame with pricing columns and datetime index, and metadata in attrs
+    :return: pd.DataFrame with pricing columns and datetime index
     """
     if freq.startswith('m'):
         table = 'futures_minutebar'
     else:
         table = 'futures_dailybar'
 
-    m = re.match(r'^(\w{1,2}?)\d{4}$', contract)
-    if m:
-        root_symbol = m.group(1)
-    else:
-        raise Exception('Not supported contract.')
-
-    sql = f'''
-        SELECT id, tick_size, multiplier, last_traded 
-        FROM futures_contract
-        WHERE symbol='{contract}'
-        '''
-    cid, tick_size, multiplier, last_traded = ENGINE.execute(sql).cursor.fetchone()
+    if isinstance(contract, str):
+        sql = f"SELECT id FROM futures_contract WHERE symbol='{contract}'"
+        (contract,) = ENGINE.execute(sql).cursor.fetchone()
 
     sql = f'''
       SELECT datetime, open, high, low, close, volume, open_interest
       FROM {table}
-      WHERE contract_id = {int(cid)}
+      WHERE contract_id = {contract}
       '''
 
     if from_date is not None:
@@ -98,120 +59,125 @@ def get_ohlc(contract, from_date=None, to_date=None, freq='minute'):
 
     if to_date is not None:
         to_date = pd.Timestamp(to_date)
-        sql += f" AND datetime <= '{to_date}'"
+        sql += f" AND datetime < '{to_date}'"
 
     sql += ' ORDER BY datetime'
+    if not asc:
+        sql += ' DESC'
 
     df = pd.read_sql(sql, ENGINE, parse_dates=True, index_col=['datetime'])
-    df.attrs['name'] = contract
-    df.attrs['root_symbol'] = root_symbol
-    df.attrs['multiplier'] = multiplier
-    df.attrs['tick_size'] = tick_size
-    df.attrs['last_traded'] = last_traded
     return df
 
 
-def check_date(dt0, dt1, grace_days=DEFAULT_GRACE_DAYS):
-    return dt0 >= dt1 - timedelta(days=grace_days)
+def get_ohlc_cf(cf, frequency, from_date=None, to_date=None):
+    """
+    :param cf: list of tuple, e.g.
+        [('IF1906', datetime.datetime(2019, 5, 16)),
+         ('IF1907', datetime.datetime(2019, 6, 21)),
+         ('IF1908', datetime.datetime(2019, 7, 19)),]
+        or
+        [(637, datetime.datetime(2019, 5, 16)),
+         (638, datetime.datetime(2019, 6, 21)),
+         (639, datetime.datetime(2019, 7, 19)),]
+    :param from_date: datetime alike, inclusive
+    :param to_date: datetime alike, exclusive
+    :param frequency: `minute` or `day`
+    :return: pd.DataFrame with pricing columns and datetime index
+    """
+    # adjust cf by from_date and to_date
+    cf.sort(key=lambda x: x[1])
+
+    if from_date and isinstance(from_date, str):
+        from_date = pd.Timestamp(from_date)
+
+    if to_date and isinstance(to_date, str):
+        to_date = pd.Timestamp(to_date)
+
+    i, j = 0, 0
+    for c, t1 in cf:
+        if from_date and t1 <= from_date:
+            i += 1
+        if to_date and t1 >= to_date:
+            j += 1
+
+    for _ in range(1, i):
+        cf.pop(0)  # skip the contract before
+    for _ in range(j - 1):
+        cf.pop()  # skip the contract after
+
+    ohlcs = []
+    ohlc = None
+    for (c0, t0), (c1, t1) in pairwise(cf + [(None, None)]):
+        if c1 is None:
+            end = to_date
+            if ohlc is not None:
+                start = ohlc.index[0]
+            else:
+                start = t0 if from_date is None else max(from_date, t0)
+        else:
+            end = t1
+            if ohlc is not None:
+                start = ohlc.index[0]
+            else:
+                start = t0 if from_date is None else max(from_date, t0)
+
+        ohlc = get_ohlc(c0, frequency, start, end, asc=False)
+        ohlcs.append(ohlc)
+
+    ret = None
+    for ohlc in ohlcs[::-1]:
+        if ret is None:
+            ret = ohlc
+            continue
+
+        t_adjustment = ohlc.index[0]
+        assert t_adjustment == ret.index[-1]
+
+        raw = ohlc.loc[t_adjustment, 'close']  # always adjusted
+        adj = ret.loc[t_adjustment, 'close']
+
+        ohlc[OHLC] += adj - raw
+        ret = pd.concat([ret.iloc[:-1], ohlc])
+
+    return ret.sort_index()
 
 
-def check_condition(row0, row1):
-    return row0['open_interest'] <= row1['open_interest'] or \
-           row0['volume'] <= row1['volume']
-
-
-def getBars(instruments, frequency, from_date=None, to_date=None, grace_days=DEFAULT_GRACE_DAYS):
-    s_frequency = {Frequency.DAY: 'day', Frequency.MINUTE: 'minute'}[frequency]
-
-    dfs = [get_ohlc(instrument, from_date, to_date, s_frequency)
-           for instrument in instruments]
-
-    if len(dfs) > 1:
-        dfs = sorted(dfs, key=lambda x: x.attrs['last_traded'])
-
-    df = dfs.pop(0)
-    mul = df.attrs['multiplier']
-
-    rows = []
-    adjustment = 0
-    df_iter = df.iterrows()
-    while True:
-        try:
-            dt, row = next(df_iter)
-        except StopIteration:
-            break
-
-        rows.append((dt, row, adjustment))
-
-        # Futures Roll Method
-        # first check roll by calendar
-        # then check roll by open interest and volume
-        adjustment = 0  # if no rollover happen
-        if dfs and check_date(dt, df.attrs['last_traded'], grace_days):
-            if dt in dfs[0].index and check_condition(row, dfs[0].loc[dt]):
-                df = dfs.pop(0)
-
-                # forward adjustment, we need add the adjustment factor to the previous bar cumulatively
-                adjustment = df.loc[dt, 'close'] - row['close']
-
-                # dt is added, so we skip it
-                idx = df.index.get_loc(dt)
-                df = df.iloc[idx + 1:]
-                df_iter = df.iterrows()
-
+def df_to_list_of_bar(df, frequency, mul=1):
     ret = []
-    adjustment = 0
-    for (dt, row, adj) in rows[::-1]:
-        if row['volume'] > 0 and row['open'] is not None and not np.isnan(row['open']):
-            ret.append(BasicBar(
-                dt,
-                (row['open'] + adjustment) * mul,
-                (row['high'] + adjustment) * mul,
-                (row['low'] + adjustment) * mul,
-                (row['close'] + adjustment) * mul,
-                row['volume'],
-                None,
-                frequency=frequency,
-                extra={'open_interest': row['open_interest']},
-            ))
-            adjustment += adj
+    for dt, row in df.iterrows():
+        ret.append(BasicBar(
+            dt,
+            row['open'] * mul,
+            row['high'] * mul,
+            row['low'] * mul,
+            row['close'] * mul,
+            row['volume'],
+            None,
+            frequency=frequency,
+            extra={'open_interest': row['open_interest']},
+        ))
     return ret
 
 
 class BarFeed(membf.BarFeed):
     def __init__(self, frequency, maxLen=None):
-        assert frequency in (Frequency.MINUTE, Frequency.DAY), 'Only 86400 and 60 are supported.'
+        assert frequency in (Frequency.MINUTE, Frequency.DAY), \
+            'Only Frequency.DAY or Frequency.MINUTE are supported.'
         super(BarFeed, self).__init__(frequency, maxLen)
 
     def barsHaveAdjClose(self):
         return False
 
-    def loadBars(self,
-                 instrument,
-                 from_date=None,
-                 to_date=None,
-                 included=None,
-                 grace_days=DEFAULT_GRACE_DAYS):
+    def loadBars(self, instrument, from_date=None, to_date=None, multiplier=1):
+        frequency = {Frequency.DAY: 'day', Frequency.MINUTE: 'minute'}[self.getFrequency()]
 
-        if isinstance(instrument, str):
-            root_symbol = instrument
-            contracts = get_contracts(instrument, from_date, to_date, included)
-            if not contracts:  # single contract
-                contracts = [instrument]
-        elif isinstance(instrument, (list, tuple)):  # list of contracts
-            root_symbol = None
-            contracts = instrument
-            for contract in contracts:
-                m = re.match(r'^(\w{1,2}?)\d{4}$', contract)
-                if m:
-                    if root_symbol is None:
-                        root_symbol = m.group(1)
-                    else:
-                        assert root_symbol == m.group(1), 'Multiple futures are not supported.'
-                else:
-                    raise Exception('Not supported contract.')
-        else:
-            raise Exception('Not supported instrument.')
+        m = re.match(r'^(\w{1,2}?)\d{4}$', instrument)
+        if m:  # single contract
+            df = get_ohlc(instrument, frequency, from_date, to_date)
+        else:  # continuous futures
+            cf = get_cf(instrument)
+            cf = list(zip(cf['contract_id'], cf['datetime']))
+            df = get_ohlc_cf(cf, frequency, from_date, to_date)
 
-        bars = getBars(contracts, self.getFrequency(), from_date, to_date, grace_days)
-        self.addBarsFromSequence(root_symbol, bars)
+        bars = df_to_list_of_bar(df, self.getFrequency(), multiplier)
+        self.addBarsFromSequence(instrument, bars)

@@ -8,7 +8,7 @@ TRADED_INSTRUMENTS = {
     'C': {'included': [1, 5, 9], 'grace_days': 200},
     'CS': {'included': [1, 5, 9], 'grace_days': 200},
     'A': {'included': [1, 5, 9], 'grace_days': 200},
-    'B': {'included': [1, 5, 9], 'grace_days': 200},
+    'B': {'included': [1, 5, 9], 'grace_days': 200, 'from_date': '2018-1-1'},
     'M': {'included': [1, 5, 9], 'grace_days': 200},
     'Y': {'included': [1, 5, 9], 'grace_days': 200},
     'P': {'included': [1, 5, 9], 'grace_days': 200},
