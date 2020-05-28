@@ -2,7 +2,6 @@ import os
 import csv
 import argparse
 from pyalgotrade import dispatcher
-from pyalgotrade.barfeed.futuresfeed import Feed
 
 TRADED_INSTRUMENTS = {
     # DCE
@@ -33,7 +32,7 @@ TRADED_INSTRUMENTS = {
     'BU': {'included': [6, 9, 12], 'grace_days': 200},
     'RB': {'included': [1, 5, 10], 'grace_days': 200},
     'HC': {'included': [1, 5, 10], 'grace_days': 200},
-    'FU': {'included': [1, 5, 9], 'grace_days': 200},
+    'FU': {'included': [1, 5, 9], 'grace_days': 200, 'from_date': '2018-6-30'},
     'RU': {'included': [1, 5, 9], 'grace_days': 200},
     'SP': {'included': [1, 5, 9], 'grace_days': 200},
     # INE
@@ -53,7 +52,7 @@ TRADED_INSTRUMENTS = {
     'ZC': {'included': [1, 5, 9], 'grace_days': 200},
     'SF': {'included': [1, 5, 9], 'grace_days': 200},
     'SM': {'included': [1, 5, 9], 'grace_days': 200},
-    'WR': {'included': [1, 5, 9], 'grace_days': 200},
+    'UR': {'included': [1, 5, 9], 'grace_days': 200},
     # CFE
     'IF': {},
     'IH': {},
@@ -64,7 +63,7 @@ TRADED_INSTRUMENTS = {
 }
 
 
-def worker(rs, f, debug=False):
+def worker(barfeed, rs, f, debug=False):
     csvfile = open(os.path.expanduser(f'~/tmp/{rs}.csv'), 'w', newline='')
     csvwriter = csv.writer(csvfile)
     csvwriter.writerow(["Date Time", "Open", "High", "Low", "Close", "Volume", "Adj Close", 'open_interest'])
@@ -84,7 +83,7 @@ def worker(rs, f, debug=False):
             bar_.getExtraColumns()['open_interest'],
         ])
 
-    feed = Feed(f)
+    feed = barfeed(f)
 
     if debug:
         feed.setDebugMode(debug)
@@ -104,15 +103,23 @@ def main():
     parser = argparse.ArgumentParser(description="barfeed to csv")
 
     parser.add_argument("--rs", required=False, default=None, help="root symbol for futures")
-    parser.add_argument("--f", required=True, type=int, help="86400=day or 60=minute")
-    parser.add_argument("--debug", required=False, type=bool, help="debug or not")
+    parser.add_argument("--freq", required=True, type=int, help="86400=day or 60=minute")
+    parser.add_argument("--adj", required=False, default='forward', type=str,
+                        help="adjustment method, `forward` or `backward` are supported")
+    parser.add_argument("--debug", required=False, type=bool,
+                        help="debug or not, only backward adjustment is supported")
     args = parser.parse_args()
 
+    if args.adj == 'backward' or args.debug:
+        from pyalgotrade.barfeed.futuresfeed2 import BarFeed as barfeed
+    elif args.adj == 'forward':
+        from pyalgotrade.barfeed.futuresfeed import BarFeed as barfeed
+
     if args.rs:
-        worker(args.rs, args.f, args.debug)
+        worker(barfeed, args.rs, args.freq, args.debug)
     else:
         for rs in TRADED_INSTRUMENTS.keys():
-            worker(rs, args.f, args.debug)
+            worker(barfeed, rs, args.freq, args.debug)
 
 
 if __name__ == "__main__":

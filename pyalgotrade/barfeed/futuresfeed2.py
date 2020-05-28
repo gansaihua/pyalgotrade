@@ -1,9 +1,10 @@
 """
-Forward adjustment for rollover
+Backward adjustment for rollover
 """
 
 import os
 import re
+import logging
 import numpy as np
 import pandas as pd
 from datetime import timedelta
@@ -19,6 +20,8 @@ ENGINE = create_engine(
     'mysql+pymysql://rm-2zedo2m914a92z7rhfo.mysql.rds.aliyuncs.com',
     connect_args={'read_default_file': os.path.expanduser('~/my.cnf')},
 )
+
+log = logger.getLogger(__name__)
 
 
 def get_contracts(root_symbol, from_date=None, to_date=None, included=None):
@@ -130,10 +133,12 @@ def getBars(instruments, frequency, from_date=None, to_date=None, grace_days=DEF
         dfs = sorted(dfs, key=lambda x: x.attrs['last_traded'])
 
     df = dfs.pop(0)
-    mul = df.attrs['multiplier']
-
-    rows = []
     adjustment = 0
+
+    logger.Formatter.DATETIME_HOOK = lambda: df.index[0]
+    log.debug(f"{df.attrs['name']}: {adjustment}")
+
+    ret = []
     df_iter = df.iterrows()
     while True:
         try:
@@ -141,28 +146,9 @@ def getBars(instruments, frequency, from_date=None, to_date=None, grace_days=DEF
         except StopIteration:
             break
 
-        rows.append((dt, row, adjustment))
-
-        # Futures Roll Method
-        # first check roll by calendar
-        # then check roll by open interest and volume
-        adjustment = 0  # if no rollover happen
-        if dfs and check_date(dt, df.attrs['last_traded'], grace_days):
-            if dt in dfs[0].index and check_condition(row, dfs[0].loc[dt]):
-                df = dfs.pop(0)
-
-                # forward adjustment, we need add the adjustment factor to the previous bar cumulatively
-                adjustment = df.loc[dt, 'close'] - row['close']
-
-                # dt is added, so we skip it
-                idx = df.index.get_loc(dt)
-                df = df.iloc[idx + 1:]
-                df_iter = df.iterrows()
-
-    ret = []
-    adjustment = 0
-    for (dt, row, adj) in rows[::-1]:
+        # we skip the day without trades
         if row['volume'] > 0 and row['open'] is not None and not np.isnan(row['open']):
+            mul = df.attrs['multiplier']
             ret.append(BasicBar(
                 dt,
                 (row['open'] + adjustment) * mul,
@@ -172,9 +158,30 @@ def getBars(instruments, frequency, from_date=None, to_date=None, grace_days=DEF
                 row['volume'],
                 None,
                 frequency=frequency,
-                extra={'open_interest': row['open_interest']},
+                extra={**df.attrs, 'open_interest': row['open_interest']},
             ))
-            adjustment += adj
+
+        # Futures Roll Method
+        # roll by open interest and volume
+        # to avoid lookahead bias, we should roll after adding bar
+        if dfs and check_date(dt, df.attrs['last_traded'], grace_days):
+            if dt in dfs[0].index and check_condition(row, dfs[0].loc[dt]):
+                df = dfs.pop(0)
+
+                # forward adjustment factor
+                adjustment += row['close'] - df.loc[dt, 'close']
+
+                # dt is added, so we skip it
+                idx = df.index.get_loc(dt)
+                df = df.iloc[idx + 1:]
+
+                df_iter = df.iterrows()
+
+                logger.Formatter.DATETIME_HOOK = lambda: dt
+                log.debug(f"{df.attrs['name']}: {adjustment}")
+
+        # reset the global formatter
+        logger.Formatter.DATETIME_HOOK = None
     return ret
 
 
@@ -185,6 +192,13 @@ class BarFeed(membf.BarFeed):
 
     def barsHaveAdjClose(self):
         return False
+
+    def setDebugMode(self, debugOn):
+        """
+        Debug and print roll dates and forward adjustment factors
+        """
+        level = logging.DEBUG if debugOn else logging.INFO
+        log.setLevel(level)
 
     def loadBars(self,
                  instrument,
