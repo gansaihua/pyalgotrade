@@ -133,9 +133,10 @@ def _get_ohlc_cf(cf, frequency, from_date=None, to_date=None, adjustment='add'):
 
 
 def get_futures_chain(root_symbol, version=DEFAULT_VERSION):
+    table = 'futures_chain'
     sql = f'''
       SELECT datetime, contract_id 
-      FROM futures_continuousfutures
+      FROM {table}
       WHERE root_symbol_id = (
         SELECT id FROM futures_rootsymbol
         WHERE symbol='{root_symbol}'
