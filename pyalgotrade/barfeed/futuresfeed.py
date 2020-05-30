@@ -52,6 +52,7 @@ def _get_ohlc(contract, frequency, from_date=None, to_date=None, asc=True):
         sql += ' DESC'
 
     df = pd.read_sql(sql, ENGINE, parse_dates=True, index_col=['datetime'])
+    df.attrs['id'] = contract
     return df
 
 
