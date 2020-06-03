@@ -1,19 +1,16 @@
 import os
 import re
 import datetime
+import argparse
 import pandas as pd
 from more_itertools import pairwise
-from sqlalchemy import create_engine
-from pyalgotrade.barfeed import membf
-from pyalgotrade.bar import BasicBar, Frequency
 
-OHLC = ['open', 'high', 'low', 'close']
-ENGINE = create_engine(
-    'mysql+pymysql://rm-2zedo2m914a92z7rhfo.mysql.rds.aliyuncs.com',
-    connect_args={'read_default_file': os.path.expanduser('~/my.cnf')},
-)
+from . import ENGINE
 
 DEFAULT_VERSION = 1
+OHLC = ['open', 'high', 'low', 'close']
+
+datetime_format = "%Y-%m-%d %H:%M:%S"
 
 
 def _get_ohlc(contract, frequency, from_date=None, to_date=None, asc=True):
@@ -158,31 +155,24 @@ def get_pricing(contract_or_futures, frequency, from_date=None, to_date=None, ad
     return df
 
 
-class BarFeed(membf.BarFeed):
-    def __init__(self, frequency, maxLen=None):
-        assert frequency in (Frequency.MINUTE, Frequency.DAY), \
-            'Only Frequency.DAY or Frequency.MINUTE are supported.'
-        super(BarFeed, self).__init__(frequency, maxLen)
+def main():
+    parser = argparse.ArgumentParser(description="futures pricing to csv")
 
-    def barsHaveAdjClose(self):
-        return False
+    parser.add_argument("--rs", required=True, help="root symbol for futures")
+    parser.add_argument("--frequency", required=False, default='day', help="day or minute")
+    parser.add_argument("--adjustment", required=False, default=None, help="`add`, `mul` or None are supported.")
+    args = parser.parse_args()
 
-    def loadBars(self, instrument, from_date=None, to_date=None, adjustment='add', multiplier=1):
-        frequency = {Frequency.DAY: 'day', Frequency.MINUTE: 'minute'}[self.getFrequency()]
-        df = get_pricing(instrument, frequency, from_date, to_date, adjustment)
+    df = get_pricing(args.rs, args.frequency, adjustment=args.adjustment)
 
-        bars = []
-        for dt, row in df.iterrows():
-            bars.append(BasicBar(
-                dt,
-                row['open'] * multiplier,
-                row['high'] * multiplier,
-                row['low'] * multiplier,
-                row['close'] * multiplier,
-                row['volume'],
-                None,
-                frequency=self.getFrequency(),
-                extra={'open_interest': row['open_interest']},
-            ))
+    # for pyalgotrade GenericCSVFeed compatibility
+    df.rename(columns=str.capitalize, inplace=True)
+    df.rename(columns={'Open_interest': 'Open Interest'}, inplace=True)
+    df.index = df.index.strftime(datetime_format)
+    df.index.name = 'Date Time'
 
-        self.addBarsFromSequence(instrument, bars)
+    df.to_csv(os.path.expanduser(f'~/tmp/{args.rs}_{args.frequency}_{args.adjustment}.csv'))
+
+
+if __name__ == "__main__":
+    main()
